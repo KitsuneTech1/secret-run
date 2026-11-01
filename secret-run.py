@@ -24,6 +24,7 @@ PROTON_PASS_PERSONAL_ACCESS_TOKEN environment variable. Never put it in a role f
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -44,7 +45,7 @@ CANDIDATES = [
 
 def find_cli():
     for c in CANDIDATES:
-        if c.name != str(c) and c.exists():
+        if c.exists():
             return str(c)
     # fall back to PATH
     from shutil import which
@@ -60,20 +61,38 @@ def die(msg, code=2):
     sys.exit(code)
 
 
+def _require_text(value, label):
+    if not isinstance(value, str) or not value or "\x00" in value:
+        die(f"invalid {label}.")
+    return value
+
+
 def get_pat():
     tok = os.environ.get("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "").strip()
     if tok:
-        return tok
+        return _require_text(tok, "Proton Pass access token")
     if PAT_FILE.exists():
-        tok = PAT_FILE.read_text(encoding="utf-8").strip()
+        try:
+            tok = PAT_FILE.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            die("could not read the Proton Pass access token file.", 3)
         if tok:
-            return tok
+            return _require_text(tok, "Proton Pass access token")
     die(f"no PAT found. Put it in {PAT_FILE} or set PROTON_PASS_PERSONAL_ACCESS_TOKEN.")
 
 
 def cli_env():
+    try:
+        if SESSION_DIR.is_symlink() or (SESSION_DIR.exists() and not SESSION_DIR.is_dir()):
+            die("Proton Pass session path is not a safe directory.", 3)
+        SESSION_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if SESSION_DIR.is_symlink() or not SESSION_DIR.is_dir():
+            die("Proton Pass session path is not a safe directory.", 3)
+        if os.name != "nt":
+            SESSION_DIR.chmod(0o700)
+    except OSError:
+        die("could not prepare the Proton Pass session directory.", 3)
     env = dict(os.environ)
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
     env["PROTON_PASS_SESSION_DIR"] = str(SESSION_DIR)
     return env
 
@@ -81,11 +100,15 @@ def cli_env():
 def run_cli(cli, args, env, reason=None, capture=True):
     e = dict(env)
     if reason:
+        _require_text(reason, "audit reason")
         e["PROTON_PASS_AGENT_REASON"] = reason
     options = {"env": e, "universal_newlines": True, "encoding": "utf-8"}
     if capture:
         options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return subprocess.run([cli, *args], **options)
+    try:
+        return subprocess.run([cli, *args], **options)
+    except (OSError, ValueError):
+        die("could not run Proton Pass CLI.", 3)
 
 
 def ensure_session(cli, env, pat):
@@ -95,44 +118,47 @@ def ensure_session(cli, env, pat):
     run_cli(cli, ["login", "--pat", pat], env)
     r = run_cli(cli, ["test"], env)
     if r.returncode != 0:
-        die("could not authenticate to Proton Pass with the PAT. "
-            + (r.stderr or r.stdout or "").strip(), 3)
+        die("could not authenticate to Proton Pass with the PAT.", 3)
 
 
 def load_role(role):
-    if not role or "/" in role or "\\" in role or role in (".", ".."):
+    if (not role or "\x00" in role or "/" in role or "\\" in role
+            or role in (".", "..")):
         die(f"invalid role name: {role!r}")
     f = ROLES_DIR / f"{role}.env"
-    if not f.exists():
+    if not f.exists() or f.is_symlink() or not f.is_file():
         die(f"role '{role}' not found ({f}). Try: secret-run --list")
     mappings = []
-    for raw in f.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = f.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        die(f"could not read role '{role}'.", 3)
+    seen_vars = set()
+    for line_number, raw in enumerate(lines, 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            die(f"bad line in {f.name}: {raw!r}")
+            die(f"bad line {line_number} in {f.name}.")
         var, ref = line.split("=", 1)
         var = var.strip()
-        if not var or "=" in var or "\x00" in var:
-            die(f"bad environment variable name in {f.name}: {raw!r}")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var):
+            die(f"bad environment variable name on line {line_number} in {f.name}.")
+        var_key = var.casefold()
+        if var_key in seen_vars:
+            die(f"duplicate environment variable on line {line_number} in {f.name}.")
+        seen_vars.add(var_key)
         ref = ref.strip()
-        if not ref:
-            die(f"bad secret reference in {f.name}: {raw!r}")
+        if not ref or "\x00" in ref:
+            die(f"bad secret reference on line {line_number} in {f.name}.")
         mappings.append((var, ref))
     if not mappings:
         die(f"role '{role}' has no mappings.")
     return mappings
 
 
-_item_index = None
-
-
 def item_index(cli, env, reason):
     """Map lowercased item title -> (share_id, item_id) across all accessible vaults."""
-    global _item_index
-    if _item_index is not None:
-        return _item_index
     idx = {}
     vl = run_cli(cli, ["vault", "list", "--output", "json"], env, reason)
     try:
@@ -144,9 +170,13 @@ def item_index(cli, env, reason):
     def collect_ids(o):
         if isinstance(o, dict):
             if "share_id" in o:
-                vault_ids.append(o["share_id"])
+                share_id = o["share_id"]
+                if isinstance(share_id, str) and share_id and "\x00" not in share_id:
+                    vault_ids.append(share_id)
             elif "id" in o and "name" in o:
-                vault_ids.append(o["id"])
+                share_id = o["id"]
+                if isinstance(share_id, str) and share_id and "\x00" not in share_id:
+                    vault_ids.append(share_id)
             for v in o.values():
                 collect_ids(v)
         elif isinstance(o, list):
@@ -162,16 +192,23 @@ def item_index(cli, env, reason):
         def collect_items(o):
             if isinstance(o, dict):
                 iid = o.get("id") or o.get("item_id")
-                title = o.get("title") or (o.get("content", {}) or {}).get("title")
-                if iid and title:
-                    idx[str(title).strip().lower()] = (sid, iid)
+                content = o.get("content")
+                content_title = content.get("title") if isinstance(content, dict) else None
+                title = o.get("title") or content_title
+                if (isinstance(iid, str) and iid and "\x00" not in iid
+                        and isinstance(title, str) and title.strip()):
+                    key = title.strip().casefold()
+                    value = (sid, iid)
+                    if key in idx and idx[key] != value:
+                        idx[key] = None
+                    else:
+                        idx[key] = value
                 for v in o.values():
                     collect_items(v)
             elif isinstance(o, list):
                 for v in o:
                     collect_items(v)
         collect_items(items)
-    _item_index = idx
     return idx
 
 
@@ -196,32 +233,40 @@ def find_field(obj, name):
 def resolve_ref(cli, env, reason, ref):
     """ref -> (share_id, item_id, field). Returns the secret string value."""
     field = "password"
+    _require_text(ref, "secret reference")
     if "::" in ref:
         left, field = ref.split("::", 1)
         ref, field = left.strip(), field.strip()
+    _require_text(ref, "secret reference")
+    _require_text(field, "field name")
     if "/" in ref:
         parts = [p.strip() for p in ref.split("/")]
         if len(parts) != 3 or not all(parts):
             die(f"bad explicit share/item/field reference {ref!r}.")
         sid, iid, field = parts
+        _require_text(sid, "share id")
+        _require_text(iid, "item id")
+        _require_text(field, "field name")
     else:
         # treat ref as an item title
         idx = item_index(cli, env, reason)
-        key = ref.strip().lower()
+        key = ref.strip().casefold()
         if key not in idx:
             die(f"item titled {ref!r} not visible to this token.")
+        if idx[key] is None:
+            die(f"item title {ref!r} is ambiguous; use an explicit share/item/field reference.", 4)
         sid, iid = idx[key]
     r = run_cli(cli, ["item", "view", "--share-id", sid, "--item-id", iid, "--output", "json"], env, reason)
     if r.returncode != 0:
-        die(f"could not read item {ref!r}: " + (r.stderr or r.stdout or "").strip(), 4)
+        die(f"could not read item {ref!r}.", 4)
     try:
         data = json.loads(r.stdout)
-    except Exception:
+    except (TypeError, ValueError, json.JSONDecodeError):
         die(f"could not parse item {ref!r}.", 4)
     val = find_field(data, field)
     if val is None or val == "":
         die(f"field {field!r} empty/missing on item {ref!r}.", 4)
-    return str(val)
+    return _require_text(str(val), "secret value")
 
 
 def main(argv):
@@ -257,17 +302,24 @@ def main(argv):
     cmd = None
     if "--" in rest:
         i = rest.index("--")
+        if i:
+            die("unexpected arguments before --")
         cmd = rest[i + 1:]
+    elif rest:
+        die("expected -- before command")
+    if check_only and cmd is not None:
+        die("--check cannot be combined with a command")
     if not check_only and not cmd:
         die("no command. Usage: secret-run <role> [--reason ..] -- <command>")
 
     reason = reason or os.environ.get("PROTON_PASS_AGENT_REASON") or f"secret-run role={role}"
+    _require_text(reason, "audit reason")
+    mappings = load_role(role)
     cli = find_cli()
     env = cli_env()
     pat = get_pat()
     ensure_session(cli, env, pat)
 
-    mappings = load_role(role)
     child_env = dict(os.environ)
     for var, ref in mappings:
         value = resolve_ref(cli, env, reason, ref)
@@ -285,6 +337,8 @@ def main(argv):
         return proc.returncode
     except FileNotFoundError:
         die(f"command not found: {cmd[0]}", 127)
+    except (OSError, ValueError):
+        die("could not start child command.", 126)
 
 
 if __name__ == "__main__":

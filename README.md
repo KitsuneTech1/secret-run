@@ -151,7 +151,12 @@ python -m unittest discover -s tests -p "test_*.py"
 
 These offline tests run without a Proton Pass account or network access. They use synthetic secrets to verify that the wrapper correctly injects values into the child process and never leaks them through the wrapper's own output.
 
-For integration testing, see `secret-run-test.py`. It requires a configured Proton Pass account and is separate from the offline tests.
+The live integration check is opt-in and contacts Proton Pass. Set
+`SECRET_RUN_TEST_CLI`, `SECRET_RUN_TEST_SHARE_ID`,
+`SECRET_RUN_TEST_ITEM_ID`, `SECRET_RUN_TEST_ITEM_TITLE`, and
+`SECRET_RUN_TEST_USERNAME`, then run `python secret-run-test.py --live`.
+Without `--live`, the script refuses to access Proton Pass. It is separate from
+the offline tests.
 
 ## Dependencies
 

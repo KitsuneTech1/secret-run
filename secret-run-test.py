@@ -15,6 +15,7 @@ the wrapper's OWN stdout never contains secret material.
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,9 +23,11 @@ from pathlib import Path
 HOME = Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
 ROOT = Path(__file__).resolve().parent
 PY = str(ROOT / "secret-run.py")
-CLI = str(HOME / "AppData/Local/Programs/ProtonPass/pass-cli.exe")
-SID = "afelbWnxqt0MgOHVuqlheRzyRmowrtD5XEhQHYQR7lYn2R3gi-4JahNxYc_295xICMon0kj5Gmy1cZ2EsOs4WA=="
-ANTHROPIC_IID = "nIhSQZ0OdLhdXNsYBnu5CmKKVa9OaRph_uTF5t39La3B0SGMMAUFwy1pLRM5BXkgbukIrTrqTCNN2mn-DPt9gQ=="
+CLI = os.environ.get("SECRET_RUN_TEST_CLI") or shutil.which("pass-cli.exe") or shutil.which("pass-cli")
+SID = os.environ.get("SECRET_RUN_TEST_SHARE_ID")
+ITEM_ID = os.environ.get("SECRET_RUN_TEST_ITEM_ID")
+ITEM_TITLE = os.environ.get("SECRET_RUN_TEST_ITEM_TITLE")
+EXPECTED_USERNAME = os.environ.get("SECRET_RUN_TEST_USERNAME")
 SESSION_DIR = str(Path(os.environ.get("LOCALAPPDATA", HOME / "AppData/Local")) /
                   "Temp" / "pass-agent-secret-run")
 REASON = "secret-run self-test 2026-09-29"
@@ -76,14 +79,22 @@ def via_secret_run():
     out = {}
     for line in r.stdout.splitlines():
         if ":" in line:
-            k, ln, h = line.split(":")
-            out[k] = (int(ln), h)
+            parts = line.split(":")
+            if len(parts) != 3:
+                continue
+            k, ln, h = parts
+            try:
+                out[k] = (int(ln), h)
+            except ValueError:
+                continue
     return out, r
 
 
 # ---- method 2: direct pass-cli --field, raw human output (independent code path) ----
 def via_field(sid, iid, field="password"):
     r = cli(["item", "view", "--share-id", sid, "--item-id", iid, "--field", field])
+    if r.returncode != 0:
+        return None
     val = (r.stdout or "").strip()
     # human output may prefix a label line; take the last non-empty line
     lines = [ln for ln in val.splitlines() if ln.strip()]
@@ -96,6 +107,8 @@ def via_field(sid, iid, field="password"):
 # ---- method 3: direct pass-cli full json parse ----
 def via_json(sid, iid, field="password"):
     r = cli(["item", "view", "--share-id", sid, "--item-id", iid, "--output", "json"])
+    if r.returncode != 0:
+        return None
     try:
         d = json.loads(r.stdout)
     except Exception:
@@ -106,7 +119,7 @@ def via_json(sid, iid, field="password"):
             for k, v in o.items():
                 if isinstance(v, (dict, list)):
                     walk(v)
-                elif str(k).lower().endswith(field):
+                elif str(k).lower() == field.lower() or str(k).lower().endswith("." + field.lower()):
                     hit[0] = v
         elif isinstance(o, list):
             for v in o:
@@ -117,35 +130,44 @@ def via_json(sid, iid, field="password"):
 
 
 def main():
+    if sys.argv[1:] != ["--live"]:
+        print("Refusing live Proton Pass access. Run with --live after setting the test configuration.")
+        return 2
+    if not CLI or not SID or not ITEM_ID or not ITEM_TITLE or not EXPECTED_USERNAME:
+        print("Set SECRET_RUN_TEST_CLI, SECRET_RUN_TEST_SHARE_ID, SECRET_RUN_TEST_ITEM_ID, "
+              "SECRET_RUN_TEST_ITEM_TITLE, and SECRET_RUN_TEST_USERNAME before --live.")
+        return 2
     print("=== secret-run triple-check self-test ===\n")
 
     # T1: --list
     r = sr(["--list"])
-    rec("role listing works", "ai-keys" in r.stdout, r.stdout.strip())
+    rec("role listing works", r.returncode == 0 and "ai-keys" in r.stdout, r.stdout.strip())
 
     # T2: --check resolves without values
     r = sr(["ai-keys", "--reason", REASON, "--check"])
-    rec("--check resolves all 3", "3 secret(s) resolved OK" in r.stdout, r.stdout.strip())
+    rec("--check resolves all 3", r.returncode == 0 and "3 secret(s) resolved OK" in r.stdout, r.stdout.strip())
 
     # T3: PAT-from-file (env unset) end-to-end
     m1, r_sr = via_secret_run()
     rec("PAT-from-file + inject into native child",
         set(m1) == {"ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"}
+        and r_sr.returncode == 0
         and all(v[0] > 0 for v in m1.values()),
         " ".join(f"{k}={v[0]}ch" for k, v in m1.items()))
 
     # T4: TRIPLE reconciliation on Anthropic key (3 independent fetch paths)
     a1 = m1.get("ANTHROPIC_API_KEY")
-    a2 = via_field(SID, ANTHROPIC_IID)
-    a3 = via_json(SID, ANTHROPIC_IID)
+    a2 = via_field(SID, ITEM_ID)
+    a3 = via_json(SID, ITEM_ID)
     agree = a1 and a2 and a3 and a1[0] == a2[0] == a3[0] and a1[1] == a2[1] == a3[1]
     rec("triple-check: 3 fetch paths agree (len+hash)", bool(agree),
         f"len {a1[0] if a1 else '?'}/{a2[0] if a2 else '?'}/{a3[0] if a3 else '?'} "
         f"hash {a1[1] if a1 else '?'}={a2[1] if a2 else '?'}={a3[1] if a3 else '?'}")
 
     # T5: wrapper's OWN stdout leaks nothing. Re-fetch value directly, assert not in wrapper stdout.
-    fv = cli(["item", "view", "--share-id", SID, "--item-id", ANTHROPIC_IID, "--field", "password"])
-    realval = (fv.stdout or "").strip().splitlines()[-1] if fv.stdout.strip() else ""
+    fv = cli(["item", "view", "--share-id", SID, "--item-id", ITEM_ID, "--field", "password"])
+    fv_output = (fv.stdout or "").strip()
+    realval = fv_output.splitlines()[-1] if fv.returncode == 0 and fv_output else ""
     leaked = bool(realval) and (realval in r_sr.stdout or realval in r_sr.stderr)
     rec("wrapper never prints the secret", not leaked,
         "no secret material in wrapper stdout/stderr")
@@ -165,7 +187,7 @@ def main():
 
     # T8: explicit SHARE/ITEM/field form resolves
     exrole = HOME / ".secret-roles" / "_selftest_explicit.env"
-    exrole.write_text(f"EXPLICIT_KEY = {SID}/{ANTHROPIC_IID}/password\n", encoding="utf-8")
+    exrole.write_text(f"EXPLICIT_KEY = {SID}/{ITEM_ID}/password\n", encoding="utf-8")
     r = sr(["_selftest_explicit", "--reason", REASON, "--check"])
     rec("explicit share/item/field form", r.returncode == 0 and "resolved OK" in r.stdout,
         r.stdout.strip())
@@ -173,11 +195,10 @@ def main():
 
     # T9: field selector (:: username) returns a DIFFERENT value than password
     fldrole = HOME / ".secret-roles" / "_selftest_field.env"
-    fldrole.write_text("U = Anthropic API Key :: username\n", encoding="utf-8")
+    fldrole.write_text(f"U = {ITEM_TITLE} :: username\n", encoding="utf-8")
     child = "import os;print('U='+os.environ.get('U',''))"
     r = sr(["_selftest_field", "--reason", REASON, "--", sys.executable, "-c", child])
-    # username on that item is 'api' (safe, non-secret) - fine to show
-    rec("field selector (:: field)", r.returncode == 0 and "U=api" in r.stdout, r.stdout.strip())
+    rec("field selector (:: field)", r.returncode == 0 and f"U={EXPECTED_USERNAME}" in r.stdout, r.stdout.strip())
     remove_if_exists(fldrole)
 
     # T10: exit code propagation
