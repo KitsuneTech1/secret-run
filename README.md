@@ -11,9 +11,19 @@ The secret flows through this path only: Proton Pass (end-to-end encrypted) -> p
 
 ## Quick Start
 
-1. Copy the example role to your home directory:
+1. Create the role directory and copy the example role to your home directory.
+
+   PowerShell:
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$HOME\.secret-roles" | Out-Null
+   Copy-Item examples/example.env "$HOME\.secret-roles\my-role.env"
+   ```
+
+   macOS or Linux:
 
    ```bash
+   mkdir -p ~/.secret-roles
    cp examples/example.env ~/.secret-roles/my-role.env
    ```
 
@@ -21,27 +31,49 @@ The secret flows through this path only: Proton Pass (end-to-end encrypted) -> p
 
 3. Set your Proton Pass access token:
 
+   PowerShell, for the current session only:
+
+   ```powershell
+   $env:PROTON_PASS_PERSONAL_ACCESS_TOKEN = "your-token"
+   ```
+
+   macOS or Linux, for the current shell only:
+
    ```bash
-   # Option A: environment variable (do not commit this)
    export PROTON_PASS_PERSONAL_ACCESS_TOKEN="your-token"
-   
-   # Option B: file (recommended)
-   echo "your-token" > ~/.secret-roles/.pat
+   ```
+
+   Or store the token in a file. PowerShell:
+
+   ```powershell
+   Set-Content "$HOME\.secret-roles\.pat" "your-token"
+   ```
+
+   macOS or Linux:
+
+   ```bash
+   printf '%s' 'your-token' > ~/.secret-roles/.pat
    chmod 600 ~/.secret-roles/.pat
    ```
 
-4. Run a command with secrets injected:
+4. Edit the role so its mappings refer to your Proton Pass items, then run a
+   command with secrets injected. This example checks whether the mapped
+   `STRIPE_SECRET_KEY` variable is present without printing its value:
 
-   ```bash
-   python secret-run.py my-role -- curl https://example.com -H "Authorization: Bearer $MY_SECRET"
+   ```text
+   python secret-run.py my-role -- python -c "import os; print('STRIPE_SECRET_KEY is set:', bool(os.environ.get('STRIPE_SECRET_KEY')))"
    ```
+
+   The child command reads the injected variable itself. Do not put
+   `$STRIPE_SECRET_KEY` or `%STRIPE_SECRET_KEY%` in the outer shell command,
+   because that shell expands it before `secret-run.py` starts.
 
 ## Usage
 
 ### Run a command with a role
 
 ```bash
-secret-run <role> [--reason "why"] -- <command> [args...]
+python secret-run.py <role> [--reason "why"] -- <command> [args...]
 ```
 
 - `<role>`: name of the `.env` file in `~/.secret-roles/` (without extension)
@@ -54,7 +86,7 @@ The child inherits your current environment plus the mapped secrets.
 ### List configured roles
 
 ```bash
-secret-run --list
+python secret-run.py --list
 ```
 
 Shows each role file name (without `.env` extension) in `~/.secret-roles/`. Does not print secret values.
@@ -62,7 +94,7 @@ Shows each role file name (without `.env` extension) in `~/.secret-roles/`. Does
 ### Check a role
 
 ```bash
-secret-run <role> --check
+python secret-run.py <role> --check
 ```
 
 Verifies that every mapping in the role resolves to a valid Proton Pass item and field. Does not print secret values. Exits with code 0 if all mappings are valid, and a non-zero code otherwise.
@@ -92,7 +124,7 @@ The Proton Pass personal access token is required for the wrapper to unlock secr
 Store it in one of two ways:
 
 1. **Environment variable** (for testing only): `PROTON_PASS_PERSONAL_ACCESS_TOKEN`
-2. **Token file** (recommended): `~/.secret-roles/.pat` with mode 0600
+2. **Token file** (recommended): `~/.secret-roles/.pat`; restrict the file to your user account
 
 The wrapper checks the environment variable first, then the file.
 
@@ -119,7 +151,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 These offline tests run without a Proton Pass account or network access. They use synthetic secrets to verify that the wrapper correctly injects values into the child process and never leaks them through the wrapper's own output.
 
-For full integration tests, see the comprehensive test suite in `secret-run-test.py`. It requires a configured Proton Pass account and is separate from the offline tests.
+For integration testing, see `secret-run-test.py`. It requires a configured Proton Pass account and is separate from the offline tests.
 
 ## Dependencies
 
