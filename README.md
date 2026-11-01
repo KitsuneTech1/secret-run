@@ -65,16 +65,16 @@ Shows each role file name (without `.env` extension) in `~/.secret-roles/`. Does
 secret-run <role> --check
 ```
 
-Verifies that every mapping in the role resolves to a valid Proton Pass item and field. Does not print secret values. Exits with code 0 if all mappings are valid, 1 otherwise.
+Verifies that every mapping in the role resolves to a valid Proton Pass item and field. Does not print secret values. Exits with code 0 if all mappings are valid, and a non-zero code otherwise.
 
 ## Role file format
 
 Each line in `~/.secret-roles/<role>.env` is one mapping:
 
 ```
-ENVVAR = Item Title                 # the item's password field
-ENVVAR = Item Title :: fieldname    # a specific field (case-insensitive)
-ENVVAR = SHARE_ID / ITEM_ID / field # explicit ids (most precise)
+ENVVAR = Item Title
+ENVVAR = Item Title :: fieldname
+ENVVAR = SHARE_ID / ITEM_ID / field
 ```
 
 Blank lines and lines starting with `#` are ignored.
@@ -111,9 +111,15 @@ Run the offline smoke test to verify the injection path works correctly:
 python tests/offline-smoke.py
 ```
 
-This test runs without a Proton Pass account or network access. It uses a synthetic secret to verify that the wrapper correctly injects values into the child process and never leaks them through the wrapper's own output.
+Run the additional offline regression tests with the Python standard library:
 
-For full integration tests, see the comprehensive test suite in `secret-run-test.py` (requires a configured Proton Pass account).
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+These offline tests run without a Proton Pass account or network access. They use synthetic secrets to verify that the wrapper correctly injects values into the child process and never leaks them through the wrapper's own output.
+
+For full integration tests, see the comprehensive test suite in `secret-run-test.py`. It requires a configured Proton Pass account and is separate from the offline tests.
 
 ## Dependencies
 

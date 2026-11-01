@@ -14,3 +14,5 @@ build/
 .idea/
 *.iml
 .DS_Store
+.offline-smoke-*
+.test-secret-run-*

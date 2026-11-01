@@ -61,13 +61,13 @@ def die(msg, code=2):
 
 
 def get_pat():
+    tok = os.environ.get("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "").strip()
+    if tok:
+        return tok
     if PAT_FILE.exists():
         tok = PAT_FILE.read_text(encoding="utf-8").strip()
         if tok:
             return tok
-    tok = os.environ.get("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "").strip()
-    if tok:
-        return tok
     die(f"no PAT found. Put it in {PAT_FILE} or set PROTON_PASS_PERSONAL_ACCESS_TOKEN.")
 
 
@@ -82,13 +82,10 @@ def run_cli(cli, args, env, reason=None, capture=True):
     e = dict(env)
     if reason:
         e["PROTON_PASS_AGENT_REASON"] = reason
-    return subprocess.run(
-        [cli, *args],
-        env=e,
-        capture_output=capture,
-        text=True,
-        encoding="utf-8",
-    )
+    options = {"env": e, "universal_newlines": True, "encoding": "utf-8"}
+    if capture:
+        options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run([cli, *args], **options)
 
 
 def ensure_session(cli, env, pat):
@@ -103,6 +100,8 @@ def ensure_session(cli, env, pat):
 
 
 def load_role(role):
+    if not role or "/" in role or "\\" in role or role in (".", ".."):
+        die(f"invalid role name: {role!r}")
     f = ROLES_DIR / f"{role}.env"
     if not f.exists():
         die(f"role '{role}' not found ({f}). Try: secret-run --list")
@@ -114,7 +113,13 @@ def load_role(role):
         if "=" not in line:
             die(f"bad line in {f.name}: {raw!r}")
         var, ref = line.split("=", 1)
-        mappings.append((var.strip(), ref.strip()))
+        var = var.strip()
+        if not var or "=" in var or "\x00" in var:
+            die(f"bad environment variable name in {f.name}: {raw!r}")
+        ref = ref.strip()
+        if not ref:
+            die(f"bad secret reference in {f.name}: {raw!r}")
+        mappings.append((var, ref))
     if not mappings:
         die(f"role '{role}' has no mappings.")
     return mappings
@@ -194,10 +199,11 @@ def resolve_ref(cli, env, reason, ref):
     if "::" in ref:
         left, field = ref.split("::", 1)
         ref, field = left.strip(), field.strip()
-    if "/" in ref and ref.count("/") >= 2:
-        sid, iid, *rest = [p for p in ref.split("/") if p != ""]
-        if rest:
-            field = rest[-1]
+    if "/" in ref:
+        parts = [p.strip() for p in ref.split("/")]
+        if len(parts) != 3 or not all(parts):
+            die(f"bad explicit share/item/field reference {ref!r}.")
+        sid, iid, field = parts
     else:
         # treat ref as an item title
         idx = item_index(cli, env, reason)
@@ -237,6 +243,8 @@ def main(argv):
     # parse leading flags
     while rest and rest[0].startswith("--"):
         if rest[0] == "--reason":
+            if len(rest) < 2:
+                die("--reason requires a value")
             reason = rest[1]
             rest = rest[2:]
         elif rest[0] == "--check":

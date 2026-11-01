@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -38,8 +38,9 @@ def write_fake_cli(directory):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="secret-run-offline-") as tmp:
-        base = Path(tmp)
+    base = ROOT / (".offline-smoke-" + uuid.uuid4().hex)
+    base.mkdir()
+    try:
         home = base / "profile"
         roles = home / ".secret-roles"
         roles.mkdir(parents=True)
@@ -67,8 +68,9 @@ def main():
             [sys.executable, str(WRAPPER), "offline", "--", sys.executable, "-c", child],
             cwd=base,
             env=env,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
             encoding="utf-8",
         )
 
@@ -80,6 +82,8 @@ def main():
             raise AssertionError("synthetic secret leaked through wrapper stdout/stderr")
         # The child's zero exit proves it received the exact synthetic value without printing it.
         print("PASS: child received synthetic secret; wrapper output did not leak it")
+    finally:
+        shutil.rmtree(str(base), ignore_errors=True)
 
 
 if __name__ == "__main__":

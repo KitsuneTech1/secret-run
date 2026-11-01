@@ -20,12 +20,13 @@ import sys
 from pathlib import Path
 
 HOME = Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
-SCRIPTS = HOME / "scripts"
-PY = str(SCRIPTS / "secret-run.py")
+ROOT = Path(__file__).resolve().parent
+PY = str(ROOT / "secret-run.py")
 CLI = str(HOME / "AppData/Local/Programs/ProtonPass/pass-cli.exe")
 SID = "afelbWnxqt0MgOHVuqlheRzyRmowrtD5XEhQHYQR7lYn2R3gi-4JahNxYc_295xICMon0kj5Gmy1cZ2EsOs4WA=="
 ANTHROPIC_IID = "nIhSQZ0OdLhdXNsYBnu5CmKKVa9OaRph_uTF5t39La3B0SGMMAUFwy1pLRM5BXkgbukIrTrqTCNN2mn-DPt9gQ=="
-SESSION_DIR = str(Path(os.environ["LOCALAPPDATA"]) / "Temp" / "pass-agent-secret-run")
+SESSION_DIR = str(Path(os.environ.get("LOCALAPPDATA", HOME / "AppData/Local")) /
+                  "Temp" / "pass-agent-secret-run")
 REASON = "secret-run self-test 2026-09-29"
 
 results = []
@@ -44,15 +45,24 @@ def clean_env():
 
 
 def sr(args, env=None):
-    return subprocess.run([sys.executable, PY, *args], capture_output=True, text=True,
-                          env=env if env is not None else clean_env())
+    return subprocess.run([sys.executable, PY, *args], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, universal_newlines=True,
+                          encoding="utf-8", env=env if env is not None else clean_env())
 
 
 def cli(args):
     e = dict(os.environ)
     e["PROTON_PASS_SESSION_DIR"] = SESSION_DIR
     e["PROTON_PASS_AGENT_REASON"] = REASON
-    return subprocess.run([CLI, *args], capture_output=True, text=True, env=e)
+    return subprocess.run([CLI, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True, encoding="utf-8", env=e)
+
+
+def remove_if_exists(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 # ---- method 1: length + salted hash via secret-run child (value stays in child) ----
@@ -151,7 +161,7 @@ def main():
     r = sr(["_selftest_bad", "--reason", REASON, "--check"])
     rec("missing item -> clean error", r.returncode != 0 and "not visible" in r.stderr
         and "Traceback" not in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "")
-    badrole.unlink(missing_ok=True)
+    remove_if_exists(badrole)
 
     # T8: explicit SHARE/ITEM/field form resolves
     exrole = HOME / ".secret-roles" / "_selftest_explicit.env"
@@ -159,7 +169,7 @@ def main():
     r = sr(["_selftest_explicit", "--reason", REASON, "--check"])
     rec("explicit share/item/field form", r.returncode == 0 and "resolved OK" in r.stdout,
         r.stdout.strip())
-    exrole.unlink(missing_ok=True)
+    remove_if_exists(exrole)
 
     # T9: field selector (:: username) returns a DIFFERENT value than password
     fldrole = HOME / ".secret-roles" / "_selftest_field.env"
@@ -168,7 +178,7 @@ def main():
     r = sr(["_selftest_field", "--reason", REASON, "--", sys.executable, "-c", child])
     # username on that item is 'api' (safe, non-secret) - fine to show
     rec("field selector (:: field)", r.returncode == 0 and "U=api" in r.stdout, r.stdout.strip())
-    fldrole.unlink(missing_ok=True)
+    remove_if_exists(fldrole)
 
     # T10: exit code propagation
     r = sr(["ai-keys", "--reason", REASON, "--", sys.executable, "-c", "import sys;sys.exit(42)"])
@@ -176,7 +186,8 @@ def main():
 
     # T11: runs from a protected cwd (System32) without the %TEMP% session-dir bug
     r = subprocess.run([sys.executable, PY, "ai-keys", "--reason", REASON, "--check"],
-                       capture_output=True, text=True, env=clean_env(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True, encoding="utf-8", env=clean_env(),
                        cwd=r"C:\Windows\System32")
     rec("works from C:\\Windows\\System32 cwd", r.returncode == 0 and "resolved OK" in r.stdout,
         r.stdout.strip() or r.stderr.strip())
