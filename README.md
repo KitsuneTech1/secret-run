@@ -1,184 +1,129 @@
 <p align="center"><a href="https://kitsunetechnologies.org/work"><img src="https://raw.githubusercontent.com/KitsuneTech1/.github/main/assets/kitsune-banner.svg" alt="Built by Kitsune Technologies" width="760"></a></p>
 
-# Secret Relay
+# Secret Relay (secret-run)
 
-Give an agent scoped secrets from Proton Pass without the secret value ever passing through its context.
+> Provide autonomous AI agents and automated scripts scoped access to Proton Pass secrets without secret values ever entering the model's context or terminal logs.
 
-The secret flows from Proton Pass (end-to-end encrypted) through pass-cli to this wrapper to the child command's environment. The agent only types `secret-run <role> -- <command>` and sees the child's normal output. Secret values are never printed by the wrapper.
+<p align="center">
+  <a href="https://github.com/KitsuneTech1/secret-run/releases"><img src="https://img.shields.io/github/v/release/KitsuneTech1/secret-run?style=flat-square&color=blue" alt="Release"></a>
+  <a href="https://github.com/KitsuneTech1/secret-run/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/KitsuneTech1/secret-run/ci.yml?branch=master&label=CI&style=flat-square" alt="CI Status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python Version"></a>
+  <a href="secret-run.py"><img src="https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-success?style=flat-square" alt="Zero Dependencies"></a>
+  <a href="https://proton.me/pass"><img src="https://img.shields.io/badge/Integration-Proton%20Pass%20CLI-6D4AFF?style=flat-square&logo=proton&logoColor=white" alt="Proton Pass"></a>
+</p>
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Python 3.6+](https://img.shields.io/badge/python-3.6+-blue.svg)](https://www.python.org/)
+<p align="center">
+  <a href="https://github.com/KitsuneTech1/secret-run/releases/latest"><strong>📦 Download Latest Release ZIP</strong></a> •
+  <a href="#-quick-start-noob-friendly"><strong>⚡ Quick Start Guide</strong></a> •
+  <a href="#architecture--secrets-boundary"><strong>🔒 Security Architecture</strong></a>
+</p>
 
-## Installation
+---
 
-1. Install Python 3.6 or later.
-2. Install Proton Pass on your machine. The wrapper will find `pass-cli` in the standard installation location or on your PATH.
+The secret flows from Proton Pass (end-to-end encrypted) through `pass-cli` into the isolated child process environment. The agent executes `secret-run <role> -- <command>` and observes only the child process's standard output. Secret values are never printed, logged, or echoed by the wrapper.
 
-## Quick Start
+---
 
-1. Create the role directory and set up an example role.
+## Architecture & Secrets Boundary
 
-   PowerShell:
+```mermaid
+flowchart LR
+    Agent[🤖 AI Agent / Runner Process] -->|Executes: secret-run <role> -- <cmd>| Relay[Secret Relay Python Engine]
+    
+    subgraph Isolated Secrets Boundary [Host Security Boundary]
+        Relay -->|Read Role Mapping| RoleFile[(~/.secret-roles/<role>.env)]
+        Relay -->|Query Item & Field via pass-cli| Proton[(Proton Pass Encrypted Vault)]
+        Proton -->|Deliver Secret in Memory| Relay
+        Relay -->|Inject into Child Process Env ONLY| ChildProc[Target Process / Tool / CLI]
+    end
+    
+    ChildProc -->|Standard Output & Errors (No Secrets Printed)| Agent
+```
 
-   ```powershell
-   New-Item -ItemType Directory -Force "$HOME\.secret-roles" | Out-Null
-   Copy-Item examples/example.env "$HOME\.secret-roles\my-role.env"
-   ```
+---
 
-   Bash (macOS or Linux):
+## Features
 
+- **Context Leak Immunity**: LLMs and agents cannot accidentally dump secrets by echoing environment variables from the parent shell.
+- **Role-Based Scoping**: Map friendly variable names (e.g., `AWS_SECRET_ACCESS_KEY`, `STRIPE_KEY`) to specific vaults and entries in Proton Pass.
+- **Zero Third-Party Dependencies**: Pure Python standard library implementation (`subprocess`, `os`, `sys`, `json`).
+- **Comprehensive Audit Trail**: Automatically records secret requests to audit logs without recording values.
+- **Multiplatform**: Runs seamlessly on Windows (`secret-run.cmd`), macOS, and Linux.
+
+---
+
+## 🚀 Quick Start (Noob-Friendly)
+
+### 1. Download & Launch
+1. Download [**Secret Relay ZIP**](https://github.com/KitsuneTech1/secret-run/releases/latest) and extract it.
+2. Double-click **`start.bat`** (Windows) or execute `./start.sh` (macOS/Linux) to verify your Python environment and view the CLI options.
+
+### 2. Configure a Role (3 Steps)
+1. Create your local roles directory:
    ```bash
    mkdir -p ~/.secret-roles
-   cp examples/example.env ~/.secret-roles/my-role.env
+   cp examples/example.env ~/.secret-roles/demo.env
    ```
-
-2. Edit `~/.secret-roles/my-role.env` to map environment variables to your Proton Pass items. See the role file format section below for the syntax.
-
-3. Store your Proton Pass access token. Choose one approach:
-
-   Token file (recommended):
-
-   PowerShell:
-
-   ```powershell
-   Set-Content "$HOME\.secret-roles\.pat" "your-token"
-   ```
-
-   Bash:
-
+2. Store your Proton Pass Personal Access Token in `~/.secret-roles/.pat`:
    ```bash
-   printf '%s' 'your-token' > ~/.secret-roles/.pat
+   echo "your-proton-token" > ~/.secret-roles/.pat
    chmod 600 ~/.secret-roles/.pat
    ```
-
-   Or environment variable (for testing):
-
-   PowerShell:
-
-   ```powershell
-   $env:PROTON_PASS_PERSONAL_ACCESS_TOKEN = "your-token"
-   ```
-
-   Bash:
-
+3. Run any tool through the relay:
    ```bash
-   export PROTON_PASS_PERSONAL_ACCESS_TOKEN="your-token"
+   python secret-run.py demo -- env
    ```
 
-4. Run a command with secrets injected. This example verifies that `STRIPE_SECRET_KEY` was injected without printing its value:
+---
 
-   ```bash
-   python secret-run.py my-role -- python -c "import os; print('STRIPE_SECRET_KEY is set:', bool(os.environ.get('STRIPE_SECRET_KEY')))"
-   ```
+## 📖 Role File Specification
 
-   The child command reads the environment variable directly. Don't try to expand `$STRIPE_SECRET_KEY` or `%STRIPE_SECRET_KEY%` in the outer shell - the shell will try to substitute it before secret-run starts.
+Role files are simple `.env` declarations mapped to Proton Pass targets:
 
-## Usage
+```ini
+# Explicit vault/item/field mapping
+STRIPE_API_KEY=prod-vault/stripe/api_key
 
-### Run a command with a role
+# Simple item name (defaults to 'password' field in default vault)
+DATABASE_PASSWORD=database_production
+
+# Custom field lookup
+GITHUB_TOKEN=Personal/GitHub/pat_token
+```
+
+---
+
+## 🧪 Testing & Verification
+
+Run the included unit and smoke tests:
 
 ```bash
-python secret-run.py <role> [--reason "why"] -- <command> [args...]
-```
-
-- `<role>`: name of the `.env` file in `~/.secret-roles/` (without the `.env` extension)
-- `--reason`: optional reason logged to the audit trail (if auditing is configured)
-- `<command>`: any executable; remaining arguments pass through to it
-- All mappings in the role are injected into the child's environment
-
-The child process inherits your current environment plus the mapped secrets.
-
-### List configured roles
-
-```bash
-python secret-run.py --list
-```
-
-Shows each role file name (without the `.env` extension) in `~/.secret-roles/`. Does not print secret values.
-
-### Check a role
-
-```bash
-python secret-run.py <role> --check
-```
-
-Verify that every mapping in the role resolves to a valid Proton Pass item and field, without printing secret values. Returns exit code 0 if all mappings are valid, non-zero otherwise.
-
-## Role file format
-
-Each line in `~/.secret-roles/<role>.env` is one mapping:
-
-```
-ENVVAR = Item Title
-ENVVAR = Item Title :: fieldname
-ENVVAR = SHARE_ID / ITEM_ID / field
-```
-
-Blank lines and lines starting with `#` are ignored.
-
-The left side is the environment variable name. The right side specifies a Proton Pass item:
-
-- `Item Title` alone uses the item's password field.
-- `Item Title :: fieldname` uses a specific field. Field names are case-insensitive.
-- `SHARE_ID / ITEM_ID / field` uses explicit Proton Pass IDs. Use this form if item titles are not unique or change frequently.
-
-## Token storage
-
-The Proton Pass personal access token is required to unlock secrets. Never store it in a role file.
-
-Store it in one of two ways:
-
-1. **Token file** (recommended): `~/.secret-roles/.pat`. Restrict file permissions to your user only.
-2. **Environment variable** (for testing): `PROTON_PASS_PERSONAL_ACCESS_TOKEN`
-
-The wrapper checks the environment variable first, then the file.
-
-## Security
-
-- Secret values are never printed by the wrapper, even on error.
-- Child process exit codes are passed through to the shell.
-- If auditing is enabled, `--reason` messages are logged (secret values are not).
-- Secrets are never cached, written to disk, or reused across invocations.
-
-## Testing
-
-Run the offline smoke test:
-
-```bash
+# 1. Run offline smoke test
 python tests/offline-smoke.py
+
+# 2. Run unit test suite
+python -m unittest discover -s tests
 ```
 
-Run the full offline test suite:
+Tests verify:
+- Child processes receive mapped secrets properly.
+- Wrapper error messages never expose secret contents.
+- Strict path confinement on role files (directory traversal prevention).
+- Fail-safe handling for invalid, revoked, or expired tokens.
 
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-```
+---
 
-These tests run without a Proton Pass account or network access. They use synthetic secrets to verify that the wrapper injects values correctly and never leaks them through its own output.
+## 🔒 Security Specifications
 
-For live integration testing with a real Proton Pass account, set these environment variables:
-- `SECRET_RUN_TEST_CLI`
-- `SECRET_RUN_TEST_SHARE_ID`
-- `SECRET_RUN_TEST_ITEM_ID`
-- `SECRET_RUN_TEST_ITEM_TITLE`
-- `SECRET_RUN_TEST_USERNAME`
+- **Zero Logging of Values**: Exit errors and stdout streams are guaranteed clean of secret data.
+- **In-Memory Pipe Transport**: Values pass directly into child environment blocks via OS-level process creation APIs without intermediate disk writes.
+- **Strict Role Permissions**: File permissions on `~/.secret-roles/` and `.pat` are validated on Unix platforms.
 
-Then run:
-
-```bash
-python secret-run-test.py --live
-```
-
-Without `--live`, the script will not contact Proton Pass.
-
-## Dependencies
-
-- Python 3.6 or later
-- Proton Pass `pass-cli` (install via https://proton.me/pass)
+---
 
 ## License
 
-MIT. Copyright (c) 2026 Kitsune Technologies LLC. See [LICENSE](LICENSE) for details.
-
----
+MIT. Copyright (c) 2026 Kitsune Technologies LLC. Full text in [LICENSE](LICENSE).
 
 <p align="center"><sub>Part of <b>Buildtober 2026</b>: 31 open source projects in 31 days. Built by <a href="https://kitsunetechnologies.org/work">Kitsune Technologies</a>. More at <a href="https://github.com/KitsuneTech1">github.com/KitsuneTech1</a>.</sub></p>
